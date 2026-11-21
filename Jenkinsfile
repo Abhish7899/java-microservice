@@ -27,6 +27,7 @@ pipeline {
         S3_BUCKET      = 'java-microservice-artifacts-297681905096'
         GIT_REPO_URL   = 'https://github.com/Abhish7899/java-microservice.git'
         GIT_BRANCH     = 'main'
+        NOTIFY_EMAIL   = 'dhurwadeabhishek1@gmail.com'
     }
 
     stages {
@@ -182,13 +183,49 @@ EOF
 
     post {
         success {
-            echo "CI Pipeline PASSED | Version: ${env.APP_VERSION} | S3: ${env.S3_ARTIFACT_URI} | ECR: ${env.ECR_REGISTRY}/${env.ECR_REPOSITORY}:${env.ECR_IMAGE_TAG}"
+            withCredentials([string(credentialsId: 'resend-api-key', variable: 'RESEND_API_KEY')]) {
+                sh '''#!/bin/bash
+                    set -euo pipefail
+                    cat > email-payload.json <<EOF
+{
+  "from": "Jenkins CI <onboarding@resend.dev>",
+  "to": ["${NOTIFY_EMAIL}"],
+  "subject": "SUCCESS: ${JOB_NAME} #${BUILD_NUMBER} (v${APP_VERSION})",
+  "text": "CI Pipeline Succeeded\\n\\nJob: ${JOB_NAME}\\nBuild: #${BUILD_NUMBER}\\nVersion: ${APP_VERSION}\\nGit Commit: ${GIT_SHORT_SHA}\\nS3 Artifact: ${S3_ARTIFACT_URI}\\nECR Image: ${ECR_REGISTRY}/${ECR_REPOSITORY}:${ECR_IMAGE_TAG}\\nConsole Logs: ${BUILD_URL}console"
+}
+EOF
+                    curl -fsS -X POST "https://api.resend.com/emails" \
+                        -H "Authorization: Bearer ${RESEND_API_KEY}" \
+                        -H "Content-Type: application/json" \
+                        --data-binary @email-payload.json || echo "WARNING: Resend notification failed"
+                '''
+            }
         }
+
         failure {
-            echo "CI Pipeline FAILED | Check console logs. Ephemeral agent will auto-terminate."
+            withCredentials([string(credentialsId: 'resend-api-key', variable: 'RESEND_API_KEY')]) {
+                sh '''#!/bin/bash
+                    set -euo pipefail
+                    TARGET_VER="${APP_VERSION:-${RELEASE_VERSION:-unknown}}"
+                    cat > email-payload.json <<EOF
+{
+  "from": "Jenkins CI <onboarding@resend.dev>",
+  "to": ["${NOTIFY_EMAIL}"],
+  "subject": "FAILED: ${JOB_NAME} #${BUILD_NUMBER} (v${TARGET_VER})",
+  "text": "CI Pipeline Failed\\n\\nJob: ${JOB_NAME}\\nBuild: #${BUILD_NUMBER}\\nTarget Version: ${TARGET_VER}\\nConsole Logs: ${BUILD_URL}console"
+}
+EOF
+                    curl -fsS -X POST "https://api.resend.com/emails" \
+                        -H "Authorization: Bearer ${RESEND_API_KEY}" \
+                        -H "Content-Type: application/json" \
+                        --data-binary @email-payload.json || echo "WARNING: Resend notification failed"
+                '''
+            }
         }
+
         always {
             sh '''#!/bin/bash
+                rm -f email-payload.json || true
                 docker logout "${ECR_REGISTRY}" || true
                 docker system prune -af --volumes || true
             '''
