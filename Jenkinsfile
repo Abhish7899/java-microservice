@@ -27,8 +27,6 @@ pipeline {
         S3_BUCKET      = 'java-microservice-artifacts-2026-290952'
         GIT_REPO_URL   = 'https://github.com/Abhish7899/java-microservice.git'
         GIT_BRANCH     = 'main'
-        SES_FROM_EMAIL = 'dhurwadeabhishek1@gmail.com'
-        SES_TO_EMAIL   = 'dhurwadeabhishek1@gmail.com'
     }
 
     stages {
@@ -67,7 +65,7 @@ pipeline {
         stage('Validate & Set Version') {
             steps {
                 script {
-                    env.APP_VERSION = params.RELEASE_VERSION.trim()
+                    env.APP_VERSION = (params.RELEASE_VERSION ?: '2.3.0').trim()
 
                     if (!(env.APP_VERSION ==~ /^[0-9]+\.[0-9]+\.[0-9]+$/)) {
                         error("Invalid version '${env.APP_VERSION}'! Use Semantic Versioning like 2.3.0")
@@ -179,59 +177,13 @@ EOF
 
     post {
         success {
-            sh '''#!/bin/bash
-                set -euo pipefail
-                cat > ses-message.json <<EOF
-{
-  "Subject": {
-    "Data": "SUCCESS: ${JOB_NAME} #${BUILD_NUMBER} (v${APP_VERSION})",
-    "Charset": "UTF-8"
-  },
-  "Body": {
-    "Text": {
-      "Data": "CI Pipeline Succeeded\\n\\nJob: ${JOB_NAME}\\nBuild: #${BUILD_NUMBER}\\nVersion: ${APP_VERSION}\\nGit Commit: ${GIT_SHORT_SHA}\\nS3 Artifact: ${S3_ARTIFACT_URI}\\nECR Image: ${ECR_REGISTRY}/${ECR_REPOSITORY}:${ECR_IMAGE_TAG}\\nConsole Logs: ${BUILD_URL}console",
-      "Charset": "UTF-8"
-    }
-  }
-}
-EOF
-                aws ses send-email \
-                    --region "${AWS_REGION}" \
-                    --from "${SES_FROM_EMAIL}" \
-                    --destination "ToAddresses=${SES_TO_EMAIL}" \
-                    --message file://ses-message.json
-            '''
+            echo "CI Pipeline PASSED | Version: ${env.APP_VERSION} | S3: ${env.S3_ARTIFACT_URI} | ECR: ${env.ECR_REGISTRY}/${env.ECR_REPOSITORY}:${env.ECR_IMAGE_TAG}"
         }
-
         failure {
-            sh '''#!/bin/bash
-                set -euo pipefail
-                TARGET_VER="${APP_VERSION:-${RELEASE_VERSION}}"
-                cat > ses-message.json <<EOF
-{
-  "Subject": {
-    "Data": "FAILED: ${JOB_NAME} #${BUILD_NUMBER} (v${TARGET_VER})",
-    "Charset": "UTF-8"
-  },
-  "Body": {
-    "Text": {
-      "Data": "CI Pipeline Failed\\n\\nJob: ${JOB_NAME}\\nBuild: #${BUILD_NUMBER}\\nTarget Version: ${TARGET_VER}\\nConsole Logs: ${BUILD_URL}console",
-      "Charset": "UTF-8"
-    }
-  }
-}
-EOF
-                aws ses send-email \
-                    --region "${AWS_REGION}" \
-                    --from "${SES_FROM_EMAIL}" \
-                    --destination "ToAddresses=${SES_TO_EMAIL}" \
-                    --message file://ses-message.json || echo "WARNING: SES failure notification could not be sent"
-            '''
+            echo "CI Pipeline FAILED | Check console logs. Ephemeral agent will auto-terminate."
         }
-
         always {
             sh '''#!/bin/bash
-                rm -f ses-message.json || true
                 docker logout "${ECR_REGISTRY}" || true
                 docker system prune -af --volumes || true
             '''
