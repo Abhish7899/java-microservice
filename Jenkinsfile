@@ -1,5 +1,4 @@
 pipeline {
-    // Match your Jenkins EC2 Cloud template label ('ephemeral-ec2' or 'ec2-java-agent')
     agent {
         label 'ephemeral-ec2'
     }
@@ -18,12 +17,6 @@ pipeline {
             defaultValue: '2.3.0',
             description: 'Semantic version format only (example: 2.3.0)'
         )
-    }
-
-    // Comment this out if JDK21 and Maven3 are pre-installed via your EC2 Init Script
-    tools {
-        jdk 'JDK21'
-        maven 'Maven3'
     }
 
     environment {
