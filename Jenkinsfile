@@ -24,7 +24,7 @@ pipeline {
         AWS_ACCOUNT_ID = '297681905096'
         ECR_REGISTRY   = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
         ECR_REPOSITORY = 'java-microservice'
-        S3_BUCKET      = 'java-microservice-artifacts-2026-290952'
+        S3_BUCKET      = 'java-microservice-artifacts-297681905096'
         GIT_REPO_URL   = 'https://github.com/Abhish7899/java-microservice.git'
         GIT_BRANCH     = 'main'
     }
@@ -134,11 +134,13 @@ EOF
 
                     aws s3 cp "target/${JAR_FILENAME}" "${S3_ARTIFACT_URI}" \
                         --region "${AWS_REGION}" \
+                        --expected-bucket-owner "${AWS_ACCOUNT_ID}" \
                         --sse AES256 \
                         --only-show-errors
 
                     aws s3 cp build-info.txt "s3://${S3_BUCKET}/java-microservice/${APP_VERSION}/build-${BUILD_NUMBER}/build-info.txt" \
                         --region "${AWS_REGION}" \
+                        --expected-bucket-owner "${AWS_ACCOUNT_ID}" \
                         --sse AES256 \
                         --only-show-errors
 
