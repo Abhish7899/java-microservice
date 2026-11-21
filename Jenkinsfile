@@ -123,6 +123,11 @@ pipeline {
                 sh '''#!/bin/bash
                     set -euo pipefail
 
+                    aws s3api head-bucket \
+                        --bucket "${S3_BUCKET}" \
+                        --expected-bucket-owner "${AWS_ACCOUNT_ID}" \
+                        --region "${AWS_REGION}"
+
                     cat > build-info.txt <<EOF
 App Version: ${APP_VERSION}
 Build Number: ${BUILD_NUMBER}
@@ -134,13 +139,11 @@ EOF
 
                     aws s3 cp "target/${JAR_FILENAME}" "${S3_ARTIFACT_URI}" \
                         --region "${AWS_REGION}" \
-                        --expected-bucket-owner "${AWS_ACCOUNT_ID}" \
                         --sse AES256 \
                         --only-show-errors
 
                     aws s3 cp build-info.txt "s3://${S3_BUCKET}/java-microservice/${APP_VERSION}/build-${BUILD_NUMBER}/build-info.txt" \
                         --region "${AWS_REGION}" \
-                        --expected-bucket-owner "${AWS_ACCOUNT_ID}" \
                         --sse AES256 \
                         --only-show-errors
 
