@@ -13,9 +13,9 @@ pipeline {
 
     parameters {
         string(
-            name: 'RELEASE_VERSION',
-            defaultValue: '2.3.0',
-            description: 'Semantic version format only (example: 2.3.0)'
+            name: 'BASE_VERSION',
+            defaultValue: '1.0',
+            description: 'Major.Minor prefix (auto-appends Jenkins BUILD_NUMBER -> e.g. 1.0.17)'
         )
     }
 
@@ -66,20 +66,21 @@ pipeline {
         stage('Validate & Set Version') {
             steps {
                 script {
-                    env.APP_VERSION = (params.RELEASE_VERSION ?: '2.3.0').trim()
+                    def baseVer = (params.BASE_VERSION ?: '1.0').trim()
 
-                    if (!(env.APP_VERSION ==~ /^[0-9]+\.[0-9]+\.[0-9]+$/)) {
-                        error("Invalid version '${env.APP_VERSION}'! Use Semantic Versioning like 2.3.0")
+                    if (!(baseVer ==~ /^[0-9]+\.[0-9]+$/)) {
+                        error("Invalid BASE_VERSION '${baseVer}'! Use Major.Minor format like 1.0 or 1.1")
                     }
 
-                    env.ARTIFACT_VERSION = "${env.APP_VERSION}-build-${env.BUILD_NUMBER}-${env.GIT_SHORT_SHA}"
-                    env.JAR_FILENAME     = "java-microservice-${env.ARTIFACT_VERSION}.jar"
-                    env.S3_ARTIFACT_URI  = "s3://${env.S3_BUCKET}/java-microservice/${env.APP_VERSION}/build-${env.BUILD_NUMBER}/${env.JAR_FILENAME}"
-                    env.ECR_IMAGE_TAG    = "${env.APP_VERSION}-build-${env.BUILD_NUMBER}"
+                    env.APP_VERSION     = "${baseVer}.${env.BUILD_NUMBER}"
+                    env.JAR_FILENAME    = "java-microservice-${env.APP_VERSION}.jar"
+                    env.S3_ARTIFACT_URI = "s3://${env.S3_BUCKET}/java-microservice/${env.APP_VERSION}/${env.JAR_FILENAME}"
+                    env.ECR_IMAGE_TAG   = "${env.APP_VERSION}"
+                    env.ECR_SHA_TAG     = "${env.APP_VERSION}-${env.GIT_SHORT_SHA}"
 
-                    echo "App Version      : ${env.APP_VERSION}"
-                    echo "S3 Artifact URI  : ${env.S3_ARTIFACT_URI}"
-                    echo "ECR Image Tag    : ${env.ECR_IMAGE_TAG}"
+                    echo "Synced Release Version : ${env.APP_VERSION}"
+                    echo "S3 Artifact URI        : ${env.S3_ARTIFACT_URI}"
+                    echo "ECR Image Tags         : ${env.ECR_IMAGE_TAG}, ${env.ECR_SHA_TAG}"
                 }
 
                 sh '''#!/bin/bash
@@ -111,9 +112,7 @@ pipeline {
                     set -euo pipefail
                     mvn -B package -DskipTests
 
-                    SOURCE_JAR="target/java-microservice-${APP_VERSION}.jar"
-                    test -f "${SOURCE_JAR}"
-                    cp "${SOURCE_JAR}" "target/${JAR_FILENAME}"
+                    test -f "target/${JAR_FILENAME}"
                     ls -lh "target/${JAR_FILENAME}"
                 '''
             }
@@ -134,6 +133,7 @@ App Version: ${APP_VERSION}
 Build Number: ${BUILD_NUMBER}
 Git Commit: ${GIT_FULL_SHA}
 ECR Image: ${ECR_REGISTRY}/${ECR_REPOSITORY}:${ECR_IMAGE_TAG}
+ECR SHA Image: ${ECR_REGISTRY}/${ECR_REPOSITORY}:${ECR_SHA_TAG}
 S3 Artifact: ${S3_ARTIFACT_URI}
 Build Date: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
 EOF
@@ -143,12 +143,12 @@ EOF
                         --sse AES256 \
                         --only-show-errors
 
-                    aws s3 cp build-info.txt "s3://${S3_BUCKET}/java-microservice/${APP_VERSION}/build-${BUILD_NUMBER}/build-info.txt" \
+                    aws s3 cp build-info.txt "s3://${S3_BUCKET}/java-microservice/${APP_VERSION}/build-info.txt" \
                         --region "${AWS_REGION}" \
                         --sse AES256 \
                         --only-show-errors
 
-                    aws s3 ls "s3://${S3_BUCKET}/java-microservice/${APP_VERSION}/build-${BUILD_NUMBER}/" --region "${AWS_REGION}"
+                    aws s3 ls "s3://${S3_BUCKET}/java-microservice/${APP_VERSION}/" --region "${AWS_REGION}"
                 '''
 
                 archiveArtifacts artifacts: 'build-info.txt', fingerprint: true
@@ -166,11 +166,11 @@ EOF
                     docker build \
                         --build-arg APP_VERSION="${APP_VERSION}" \
                         -t "${ECR_REGISTRY}/${ECR_REPOSITORY}:${ECR_IMAGE_TAG}" \
-                        -t "${ECR_REGISTRY}/${ECR_REPOSITORY}:${ARTIFACT_VERSION}" \
+                        -t "${ECR_REGISTRY}/${ECR_REPOSITORY}:${ECR_SHA_TAG}" \
                         .
 
                     docker push "${ECR_REGISTRY}/${ECR_REPOSITORY}:${ECR_IMAGE_TAG}"
-                    docker push "${ECR_REGISTRY}/${ECR_REPOSITORY}:${ARTIFACT_VERSION}"
+                    docker push "${ECR_REGISTRY}/${ECR_REPOSITORY}:${ECR_SHA_TAG}"
 
                     aws ecr describe-images \
                         --repository-name "${ECR_REPOSITORY}" \
@@ -206,7 +206,7 @@ EOF
             withCredentials([string(credentialsId: 'resend-api-key', variable: 'RESEND_API_KEY')]) {
                 sh '''#!/bin/bash
                     set -euo pipefail
-                    TARGET_VER="${APP_VERSION:-${RELEASE_VERSION:-unknown}}"
+                    TARGET_VER="${APP_VERSION:-${BASE_VERSION:-unknown}}"
                     cat > email-payload.json <<EOF
 {
   "from": "Jenkins CI <onboarding@resend.dev>",
