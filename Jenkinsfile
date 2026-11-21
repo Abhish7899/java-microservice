@@ -1,5 +1,5 @@
 pipeline {
-    // Apne Jenkins EC2 Cloud label se exact match rakhna ('ephemeral-ec2' ya 'ec2-java-agent')
+    // Match your Jenkins EC2 Cloud template label ('ephemeral-ec2' or 'ec2-java-agent')
     agent {
         label 'ephemeral-ec2'
     }
@@ -20,8 +20,7 @@ pipeline {
         )
     }
 
-    // Agar Jenkins Global Tools mein JDK21 / Maven3 configured nahi hai aur
-    // EC2 Init Script mein pre-installed hai, toh is tools block ko comment kar dena.
+    // Comment this out if JDK21 and Maven3 are pre-installed via your EC2 Init Script
     tools {
         jdk 'JDK21'
         maven 'Maven3'
@@ -35,14 +34,14 @@ pipeline {
         S3_BUCKET      = 'java-microservice-artifacts-2026-290952'
         GIT_REPO_URL   = 'https://github.com/Abhish7899/java-microservice.git'
         GIT_BRANCH     = 'main'
-        NOTIFY_EMAIL   = 'your-email@example.com' // Apna email address yahan daalo
+        SES_FROM_EMAIL = 'dhurwadeabhishek1@gmail.com'
+        SES_TO_EMAIL   = 'dhurwadeabhishek1@gmail.com'
     }
 
     stages {
 
         stage('Checkout') {
             steps {
-                // Explicit repo checkout (Production tip: Multibranch job mein 'checkout scm' use hota hai)
                 git branch: "${env.GIT_BRANCH}", url: "${env.GIT_REPO_URL}"
 
                 script {
@@ -81,7 +80,6 @@ pipeline {
                         error("Invalid version '${env.APP_VERSION}'! Use Semantic Versioning like 2.3.0")
                     }
 
-                    // Version + Build Number + Git SHA (Immutable & Traceable)
                     env.ARTIFACT_VERSION = "${env.APP_VERSION}-build-${env.BUILD_NUMBER}-${env.GIT_SHORT_SHA}"
                     env.JAR_FILENAME     = "java-microservice-${env.ARTIFACT_VERSION}.jar"
                     env.S3_ARTIFACT_URI  = "s3://${env.S3_BUCKET}/java-microservice/${env.APP_VERSION}/build-${env.BUILD_NUMBER}/${env.JAR_FILENAME}"
@@ -119,7 +117,6 @@ pipeline {
             steps {
                 sh '''#!/bin/bash
                     set -euo pipefail
-                    # Tests already ran in previous stage - skip duplicate execution
                     mvn -B package -DskipTests
 
                     SOURCE_JAR="target/java-microservice-${APP_VERSION}.jar"
@@ -157,7 +154,6 @@ EOF
                     aws s3 ls "s3://${S3_BUCKET}/java-microservice/${APP_VERSION}/build-${BUILD_NUMBER}/" --region "${AWS_REGION}"
                 '''
 
-                // Controller disk safe rakho: heavy JAR S3 pe gaya, controller pe sirf metadata rakho
                 archiveArtifacts artifacts: 'build-info.txt', fingerprint: true
             }
         }
@@ -179,7 +175,6 @@ EOF
                     docker push "${ECR_REGISTRY}/${ECR_REPOSITORY}:${ECR_IMAGE_TAG}"
                     docker push "${ECR_REGISTRY}/${ECR_REPOSITORY}:${ARTIFACT_VERSION}"
 
-                    # Verify image pushed to ECR
                     aws ecr describe-images \
                         --repository-name "${ECR_REPOSITORY}" \
                         --region "${AWS_REGION}" \
@@ -191,43 +186,59 @@ EOF
 
     post {
         success {
-            emailext(
-                to: "${env.NOTIFY_EMAIL}",
-                subject: "SUCCESS: ${env.JOB_NAME} #${env.BUILD_NUMBER} (v${env.APP_VERSION})",
-                mimeType: 'text/html',
-                body: """
-                    <h2>CI Pipeline Succeeded</h2>
-                    <table border="1" cellpadding="6" cellspacing="0">
-                      <tr><td><b>Project</b></td><td>${env.JOB_NAME}</td></tr>
-                      <tr><td><b>Build Number</b></td><td>#${env.BUILD_NUMBER}</td></tr>
-                      <tr><td><b>Version</b></td><td>${env.APP_VERSION}</td></tr>
-                      <tr><td><b>Git Commit</b></td><td>${env.GIT_SHORT_SHA}</td></tr>
-                      <tr><td><b>S3 Artifact</b></td><td>${env.S3_ARTIFACT_URI}</td></tr>
-                      <tr><td><b>ECR Image</b></td><td>${env.ECR_REGISTRY}/${env.ECR_REPOSITORY}:${env.ECR_IMAGE_TAG}</td></tr>
-                      <tr><td><b>Build Logs</b></td><td><a href="${env.BUILD_URL}console">View Console Output</a></td></tr>
-                    </table>
-                """
-            )
+            sh '''#!/bin/bash
+                set -euo pipefail
+                cat > ses-message.json <<EOF
+{
+  "Subject": {
+    "Data": "SUCCESS: ${JOB_NAME} #${BUILD_NUMBER} (v${APP_VERSION})",
+    "Charset": "UTF-8"
+  },
+  "Body": {
+    "Text": {
+      "Data": "CI Pipeline Succeeded\\n\\nJob: ${JOB_NAME}\\nBuild: #${BUILD_NUMBER}\\nVersion: ${APP_VERSION}\\nGit Commit: ${GIT_SHORT_SHA}\\nS3 Artifact: ${S3_ARTIFACT_URI}\\nECR Image: ${ECR_REGISTRY}/${ECR_REPOSITORY}:${ECR_IMAGE_TAG}\\nConsole Logs: ${BUILD_URL}console",
+      "Charset": "UTF-8"
+    }
+  }
+}
+EOF
+                aws ses send-email \
+                    --region "${AWS_REGION}" \
+                    --from "${SES_FROM_EMAIL}" \
+                    --destination "ToAddresses=${SES_TO_EMAIL}" \
+                    --message file://ses-message.json
+            '''
         }
 
         failure {
-            emailext(
-                to: "${env.NOTIFY_EMAIL}",
-                subject: "FAILED: ${env.JOB_NAME} #${env.BUILD_NUMBER} (v${env.RELEASE_VERSION})",
-                mimeType: 'text/html',
-                attachLog: true,
-                body: """
-                    <h2 style="color:red;">CI Pipeline Failed</h2>
-                    <p><b>Job:</b> ${env.JOB_NAME} #${env.BUILD_NUMBER}</p>
-                    <p><b>Target Version:</b> ${env.RELEASE_VERSION}</p>
-                    <p><b>Console Logs:</b> <a href="${env.BUILD_URL}console">${env.BUILD_URL}console</a></p>
-                    <p>Build log is attached for troubleshooting.</p>
-                """
-            )
+            sh '''#!/bin/bash
+                set -euo pipefail
+                TARGET_VER="${APP_VERSION:-${RELEASE_VERSION}}"
+                cat > ses-message.json <<EOF
+{
+  "Subject": {
+    "Data": "FAILED: ${JOB_NAME} #${BUILD_NUMBER} (v${TARGET_VER})",
+    "Charset": "UTF-8"
+  },
+  "Body": {
+    "Text": {
+      "Data": "CI Pipeline Failed\\n\\nJob: ${JOB_NAME}\\nBuild: #${BUILD_NUMBER}\\nTarget Version: ${TARGET_VER}\\nConsole Logs: ${BUILD_URL}console",
+      "Charset": "UTF-8"
+    }
+  }
+}
+EOF
+                aws ses send-email \
+                    --region "${AWS_REGION}" \
+                    --from "${SES_FROM_EMAIL}" \
+                    --destination "ToAddresses=${SES_TO_EMAIL}" \
+                    --message file://ses-message.json || echo "WARNING: SES failure notification could not be sent"
+            '''
         }
 
         always {
             sh '''#!/bin/bash
+                rm -f ses-message.json || true
                 docker logout "${ECR_REGISTRY}" || true
                 docker system prune -af --volumes || true
             '''
